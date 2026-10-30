@@ -14,6 +14,7 @@ use reqwest_middleware::ClientBuilder as MwClientBuilder;
 use rootcause::option_ext::OptionExt;
 use rootcause::prelude::*;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use crate::anisette::remote_v3::{state::AnisetteState, websocket::WsMessage};
@@ -50,7 +51,7 @@ impl RemoteV3AnisetteProvider {
     ) -> Result<Self, Report> {
         Ok(Self {
             state: None,
-            url: url.to_string(),
+            url: url.trim_end_matches('/').to_string(),
             storage,
             serial_number,
             client: Self::build_reqwest_client(None)?,
@@ -91,7 +92,7 @@ impl RemoteV3AnisetteProvider {
     }
 
     pub fn set_url(mut self, url: &str) -> RemoteV3AnisetteProvider {
-        self.url = url.to_string();
+        self.url = url.trim_end_matches('/').to_string();
         self
     }
 
@@ -103,6 +104,17 @@ impl RemoteV3AnisetteProvider {
     pub fn set_serial_number(mut self, serial_number: String) -> RemoteV3AnisetteProvider {
         self.serial_number = serial_number;
         self
+    }
+
+    /// Bind an ADI identity to the anisette server that provisioned it.
+    /// Credentials from another server can be rejected as invalid ADIB data.
+    pub fn state_storage_key_for_url(url: &str) -> String {
+        let normalized = url.trim_end_matches('/').to_ascii_lowercase();
+        format!("anisette_state_v3_{}", hex::encode(Sha256::digest(normalized.as_bytes())))
+    }
+
+    fn state_storage_key(&self) -> String {
+        Self::state_storage_key_for_url(&self.url)
     }
 }
 
@@ -162,12 +174,22 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
     }
 
     async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
-        Ok(AnisetteClientInfo {
-            // Match the known-working iLoader v2.4.1 AuthKit override.
-            // Keep this in sync with the Mac anisette service selected by the UI.
-            client_info: "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>".to_string(),
-            user_agent: "akd/1.0 CFNetwork/811.5.4".to_string(),
-        })
+        // Anisette headers, client identity and User-Agent must describe the
+        // same emulated Mac. EmberSign reads these values from this endpoint.
+        let identity = self.client
+            .get(format!("{}/v3/client_info", self.url))
+            .send()
+            .await
+            .context("Failed to contact the selected Mac anisette server")?
+            .error_for_status()
+            .context("The selected Mac anisette server could not supply client info")?
+            .json::<AnisetteClientInfo>()
+            .await
+            .context("The anisette server returned invalid client info")?;
+        if identity.client_info.trim().is_empty() || identity.user_agent.trim().is_empty() {
+            bail!("The Mac anisette server returned an empty client identity");
+        }
+        Ok(identity)
     }
 
     fn needs_provisioning(&self) -> Result<bool, Report> {
@@ -187,8 +209,9 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
 
 impl RemoteV3AnisetteProvider {
     async fn get_state(&mut self, gs: Arc<GrandSlam>) -> Result<&mut AnisetteState, Report> {
+        let storage_key = self.state_storage_key();
         if self.state.is_none() {
-            if let Ok(Some(state)) = &self.storage.retrieve_data("anisette_state") {
+            if let Ok(Some(state)) = &self.storage.retrieve_data(&storage_key) {
                 if let Ok(state) = plist::from_bytes(state) {
                     info!("Loaded existing anisette state");
                     self.state = Some(state);
@@ -213,7 +236,7 @@ impl RemoteV3AnisetteProvider {
         let mut writer = std::io::BufWriter::new(buf);
         plist::to_writer_xml(&mut writer, &state)?;
         self.storage
-            .store_data("anisette_state", &writer.into_inner()?)?;
+            .store_data(&storage_key, &writer.into_inner()?)?;
 
         Ok(state)
     }
