@@ -23,7 +23,9 @@ use crate::util::plist::PlistDataExtract;
 use crate::util::storage::{SideloadingStorage, new_storage};
 use crate::{SideloadError, anisette::remote_v3::websocket::AppWebSocket};
 
-pub const DEFAULT_ANISETTE_V3_URL: &str = "https://ani.stikstore.app";
+// A macOS anisette identity is required for current Apple Developer sign-in.
+// The previous default and hard-coded Xcode identity cause GrandSlam HTTP 503.
+pub const DEFAULT_ANISETTE_V3_URL: &str = "https://mac-ani.jkcoxson.com";
 
 pub struct RemoteV3AnisetteProvider {
     pub state: Option<AnisetteState>,
@@ -161,8 +163,10 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
 
     async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
         Ok(AnisetteClientInfo {
-            client_info: "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.dt.Xcode/25183.54.10)>".to_string(),
-            user_agent: "akd/1.0 CFNetwork/808.1.4".to_string(),
+            // Match the known-working iLoader v2.4.1 AuthKit override.
+            // Keep this in sync with the Mac anisette service selected by the UI.
+            client_info: "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>".to_string(),
+            user_agent: "akd/1.0 CFNetwork/811.5.4".to_string(),
         })
     }
 
