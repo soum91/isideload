@@ -353,15 +353,16 @@ impl Sideloader {
 
         if !watch_apps.is_empty() {
             info!("Installing Apple Watch companion app directly with fresh companion proxy connections...");
-            crate::sideload::watch_install::install_watch_apps(
+            tokio::time::timeout(std::time::Duration::from_secs(240), crate::sideload::watch_install::install_watch_apps(
                 device_provider,
                 &watch_apps,
                 &self.machine_name,
                 |progress| {
                     info!("Installing Apple Watch app: {}%", progress);
                 },
-            )
+            ))
             .await
+            .context("Apple Watch install over USB timed out after four minutes. The iPhone app is installed; try selecting Network for the RSD-based Watch installer")?
             .context("Failed to install Apple Watch companion app")?;
         }
 
