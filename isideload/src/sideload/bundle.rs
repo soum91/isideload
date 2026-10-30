@@ -47,7 +47,7 @@ impl Bundle {
         ))?;
 
         let plug_ins_dir = bundle_path.join("PlugIns");
-        let app_extensions = if isideload_vfs::fs::metadata(&plug_ins_dir).is_ok() {
+        let app_extensions: Vec<Bundle> = if isideload_vfs::fs::metadata(&plug_ins_dir).is_ok() {
             isideload_vfs::fs::read_dir(&plug_ins_dir)
                 .context(SideloadError::InvalidBundle(
                     "Failed to read PlugIns directory".to_string(),
@@ -81,7 +81,7 @@ impl Bundle {
         };
 
         let watch_dir = bundle_path.join("Watch");
-        let watch_apps = if isideload_vfs::fs::metadata(&watch_dir).is_ok() {
+        let mut watch_apps: Vec<Bundle> = if isideload_vfs::fs::metadata(&watch_dir).is_ok() {
             isideload_vfs::fs::read_dir(&watch_dir)
                 .context(SideloadError::InvalidBundle(
                     "Failed to read Watch directory".to_string(),
@@ -97,6 +97,16 @@ impl Bundle {
         } else {
             Vec::new()
         };
+
+        // Xcode 26+ embeds single-target Watch apps as Foundation extensions
+        // inside PlugIns/, not the legacy Watch/ directory. Treat these .app
+        // bundles as Watch companions so they receive Watch provisioning,
+        // relationship rewriting, signing, and direct paired-Watch installation.
+        // Ordinary .appex extensions must stay in app_extensions.
+        let (modern_watch_apps, app_extensions): (Vec<_>, Vec<_>) = app_extensions
+            .into_iter()
+            .partition(Self::is_modern_watch_app);
+        watch_apps.extend(modern_watch_apps);
 
         let libraries = find_dylibs(&bundle_path, &bundle_path)?;
 
@@ -115,6 +125,18 @@ impl Bundle {
             "CFBundleIdentifier".to_string(),
             Value::String(id.to_string()),
         );
+    }
+
+    fn is_modern_watch_app(bundle: &Self) -> bool {
+        bundle
+            .bundle_dir
+            .extension()
+            .is_some_and(|ext| ext == "app")
+            && bundle
+                .app_info
+                .get("WKCompanionAppBundleIdentifier")
+                .and_then(|value| value.as_string())
+                .is_some()
     }
 
     pub fn bundle_identifier(&self) -> Option<&str> {
@@ -429,5 +451,26 @@ mod tests {
             app_ids[1].bundle_identifier(),
             Some("com.example.app.TEAM.watchkitapp")
         );
+    }
+
+    #[test]
+    fn classifies_modern_plugins_watch_app_without_reclassifying_widgets() {
+        let mut watch = test_bundle("com.example.app.watchkitapp", "Watch");
+        watch.bundle_dir = PathBuf::from("Main.app/PlugIns/Watch.app");
+        watch.app_info.insert(
+            "WKCompanionAppBundleIdentifier".to_string(),
+            Value::String("com.example.app".to_string()),
+        );
+
+        let mut widgets = test_bundle("com.example.app.watchkitapp.widgets", "Widgets");
+        widgets.bundle_dir = PathBuf::from("Main.app/PlugIns/Widgets.appex");
+
+        let (watch_apps, extensions): (Vec<_>, Vec<_>) = vec![watch, widgets]
+            .into_iter()
+            .partition(Bundle::is_modern_watch_app);
+        assert_eq!(watch_apps.len(), 1);
+        assert_eq!(watch_apps[0].bundle_identifier(), Some("com.example.app.watchkitapp"));
+        assert_eq!(extensions.len(), 1);
+        assert_eq!(extensions[0].bundle_identifier(), Some("com.example.app.watchkitapp.widgets"));
     }
 }
