@@ -197,6 +197,12 @@ impl GrandSlam {
             "X-Apple-App-Info",
             HeaderValue::from_static("com.apple.gs.xcode.auth"),
         );
+        // Match upstream's HTTP/1 connection handling. Apple can reject a reused
+        // GrandSlam connection after a platform/client-info transition.
+        headers.insert(
+            reqwest::header::CONNECTION,
+            HeaderValue::from_static("close"),
+        );
 
         Ok(headers)
     }
